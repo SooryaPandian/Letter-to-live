@@ -1,0 +1,6 @@
+streamlit
+PyMuPDF
+spacy
+faiss-cpu
+ollama
+numpy
