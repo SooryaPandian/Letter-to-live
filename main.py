@@ -2,11 +2,8 @@ import streamlit as st
 import fitz  # PyMuPDF
 import spacy
 import faiss
-try:
-    import faiss.contrib.torch_utils  # noqa: F401
-    GPU_AVAILABLE = True
-except ImportError:
-    GPU_AVAILABLE = False
+# Force CPU-only mode on Windows (faiss-gpu not available)
+GPU_AVAILABLE = False
 import os
 from ollama import Client
 from typing import List, Tuple
@@ -103,7 +100,9 @@ def get_top_k_chunks(question, index, chunk_texts, k=3):
 
 st.set_page_config(page_title="Book Character Chat", layout="wide")
 
-st.title("📚 Talk to Your Favorite Book Character")
+st.title("📚 Letter To Life")
+st.markdown("""
+Welcome to **Letter To Life**! This app allows you to chat with characters from your favorite books.""")
 
 # Session state
 if "chat_history" not in st.session_state:
@@ -122,6 +121,14 @@ if "character_name" not in st.session_state:
 # --- PDF Upload and Processing (only once) ---
 sidebar = st.sidebar
 uploaded_file = sidebar.file_uploader("Upload a Book (PDF)", type="pdf")
+
+# Helper to track character selection changes
+def handle_character_change(new_character):
+    if "character_name" in st.session_state and st.session_state.character_name != new_character:
+        st.session_state.show_confirm_modal = True
+        st.session_state.next_character = new_character
+    else:
+        st.session_state.character_name = new_character
 
 if uploaded_file and "pdf_processed" not in st.session_state:
     meta = {}
@@ -144,7 +151,8 @@ if uploaded_file and "pdf_processed" not in st.session_state:
         progress.progress(0.5, text="Chunking text...")
 
         # Character selection (only before embedding)
-        st.session_state.character_name = sidebar.selectbox("Choose Character", st.session_state.characters, key="character_select_pre")
+        selected_character = sidebar.selectbox("Choose Character", st.session_state.characters, key="character_select_pre", on_change=None)
+        st.session_state.character_name = selected_character
 
         # Step 3: Chunk text
         chunks = chunk_text(st.session_state.text)
@@ -153,13 +161,8 @@ if uploaded_file and "pdf_processed" not in st.session_state:
         # Step 4: Embed
         embeddings = embed_texts(chunks)
         dimension = embeddings.shape[1]
-        # Use FAISS GPU if available
-        if GPU_AVAILABLE:
-            res = faiss.StandardGpuResources()
-            cpu_index = faiss.IndexFlatL2(dimension)
-            index = faiss.index_cpu_to_gpu(res, 0, cpu_index)
-        else:
-            index = faiss.IndexFlatL2(dimension)
+        # Use FAISS CPU index (GPU not available on Windows)
+        index = faiss.IndexFlatL2(dimension)
         index.add(embeddings)
         st.session_state.faiss_index = index
         st.session_state.chunk_texts = chunks
@@ -170,7 +173,36 @@ if uploaded_file and "pdf_processed" not in st.session_state:
 
 # If already processed, show character select (for re-selection)
 elif "pdf_processed" in st.session_state and "characters" in st.session_state:
-    st.session_state.character_name = st.selectbox("Choose Character", st.session_state.characters, key="character_select")
+    selected_character = sidebar.selectbox(
+        "Choose Character",
+        st.session_state.characters,
+        key="character_select",
+        index=st.session_state.characters.index(st.session_state.character_name) if st.session_state.character_name in st.session_state.characters else 0,
+        on_change=None
+    )
+    # Detect character change
+    if selected_character != st.session_state.character_name:
+        st.session_state.show_confirm_modal = True
+        st.session_state.next_character = selected_character
+
+# Confirmation modal for character change
+if st.session_state.get("show_confirm_modal", False):
+    with sidebar:
+        st.warning("All previous chats will be cleared. Are you sure you want to change the character?")
+        col1, col2 = st.columns(2)
+        confirm = col1.button("Yes", key="confirm_change")
+        cancel = col2.button("Cancel", key="cancel_change")
+        if confirm:
+            st.session_state.character_name = st.session_state.next_character
+            st.session_state.conversation = []
+            st.session_state.chat_history = []
+            st.session_state.show_confirm_modal = False
+            st.session_state.next_character = None
+            st.rerun()
+        elif cancel:
+            st.session_state.show_confirm_modal = False
+            st.session_state.next_character = None
+            st.rerun()
 
 # --- Chat Interface ---
 if st.session_state.get("faiss_index") and st.session_state.get("character_name"):
